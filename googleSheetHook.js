@@ -6,14 +6,8 @@ const googleSheetHook = new Express.Router();
 
 const googleUpdate = async (request, response, next) => {
   try {
-    const body = [
-      { storeIds: [6776.0], status: "QA Error" },
-      {
-        status: "QA Done",
-        storeIds: [7012.0, 6356.0, 6458.0, 6785.0, 6857.0, 6889.0],
-      },
-    ];
-    console.log(JSON.parse(JSON.stringify(request)));
+    const body = JSON.parse(JSON.stringify(request.body));
+    console.log();
     async function getProductData(storeId) {
       const url = `https://locationscloud.com/edd-api/v2/products?product=${storeId}`;
 
