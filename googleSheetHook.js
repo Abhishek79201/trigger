@@ -182,7 +182,6 @@
 // googleSheetHook.post("/", googleUpdate);
 
 // export { googleSheetHook };
-
 "use strict";
 import Express from "express";
 import Product from "./Product.js";
@@ -192,7 +191,7 @@ const googleSheetHook = new Express.Router();
 const googleUpdate = async (request, response, next) => {
   try {
     const body = JSON.parse(JSON.stringify(request.body));
-    console.log("body", body);
+
     // Function to sanitize storeIds (remove .0)
     function sanitizeStoreIds(storeIds) {
       return storeIds.map((storeId) => Math.floor(storeId)); // or parseInt(storeId)
@@ -221,18 +220,118 @@ const googleUpdate = async (request, response, next) => {
       }
     }
 
+    // Function to insert product data into the database
+    async function insertProductIntoDb(
+      category_ids,
+      country_id,
+      productData,
+      pricingData
+    ) {
+      const values = {
+        id: productData.id,
+        slug: productData.slug,
+        title: productData.title,
+        create_date: productData.create_date,
+        modified_date: productData.modified_date,
+        status: productData.status,
+        link: productData.link,
+        permalink: productData.permalink,
+        content: productData.content,
+        excerpt: productData.excerpt,
+        thumbnail: productData.thumbnail,
+        price: pricingData,
+        country_id: country_id,
+        category_ids: JSON.stringify(category_ids),
+      };
+
+      try {
+        console.log(values);
+        await Product.create(values);
+        console.log(
+          `Product data for store_id ${productData.id} inserted successfully.`
+        );
+      } catch (err) {
+        console.error(
+          `Error inserting product data for store_id ${productData.id}:`,
+          err
+        );
+      }
+    }
+
+    // Fetch product data from API
+    async function getProductData(storeId) {
+      const url = `https://locationscloud.com/edd-api/v2/products?product=${storeId}`;
+
+      function extractIds(data) {
+        let category_ids = [];
+        let country_id = null;
+
+        data.forEach((term, index) => {
+          if (index === data.length - 1) {
+            country_id = term.term_id;
+          } else {
+            category_ids.push(term.term_id);
+          }
+        });
+
+        return { category_ids, country_id };
+      }
+
+      try {
+        const response = await axios.get(url);
+        if (
+          response.status === 200 &&
+          response.data.products &&
+          response.data.products.length > 0
+        ) {
+          const productInfo = response.data.products[0].info;
+          const pricingData = Number(response.data.products[0].pricing.amount);
+          const category = response.data.products[0].info.category;
+          const ids = extractIds(category);
+          return { productData: productInfo, pricingData, ids };
+        } else {
+          console.log(`No products found for store_id ${storeId}.`);
+          return { productInfo: null, pricingData: null };
+        }
+      } catch (err) {
+        console.error(
+          `Failed to fetch data from API for store_id ${storeId}:`,
+          err.message
+        );
+        return { productInfo: null, pricingData: null };
+      }
+    }
+
+    // Process store data for QA Done IDs
+    async function processStoreData(storeId) {
+      const { productData, pricingData, ids } = await getProductData(storeId);
+
+      if (!productData && !pricingData && !ids) return;
+      const { category_ids, country_id } = ids;
+
+      if (productData) {
+        // Insert new data for the store
+        await insertProductIntoDb(
+          category_ids,
+          country_id,
+          productData,
+          pricingData
+        );
+      }
+    }
+
     // Collect all storeIds (from both QA Error and QA Done)
-    const storeIds = [
+    const allStoreIds = [
       ...(body.find((item) => item.status === "QA Error")?.storeIds || []),
       ...(body.find((item) => item.status === "QA Done")?.storeIds || []),
     ];
 
-    if (storeIds.length > 0) {
-      // Sanitize storeIds before removing
-      const sanitizedStoreIds = sanitizeStoreIds(storeIds);
+    // Sanitize all storeIds
+    const sanitizedAllStoreIds = sanitizeStoreIds(allStoreIds);
 
-      // Remove all storeIds from DB
-      const removePromises = sanitizedStoreIds.map(async (storeId) => {
+    // Remove all storeIds from DB
+    if (sanitizedAllStoreIds.length > 0) {
+      const removePromises = sanitizedAllStoreIds.map(async (storeId) => {
         const storeExists = await checkIfStoreExists(storeId);
         if (storeExists) {
           await removeProductFromDb(storeId); // Remove if exists
@@ -243,9 +342,20 @@ const googleUpdate = async (request, response, next) => {
       await Promise.all(removePromises);
     }
 
+    // Handle QA Done: Process the new store IDs
+    const qaDone = body.find((item) => item.status === "QA Done");
+
+    if (qaDone && qaDone.storeIds.length > 0) {
+      const sanitizedDoneStoreIds = sanitizeStoreIds(qaDone.storeIds);
+      const storeProcessingPromises = sanitizedDoneStoreIds.map((storeId) =>
+        processStoreData(storeId)
+      );
+      await Promise.all(storeProcessingPromises);
+    }
+
     response
       .status(200)
-      .json({ message: "Product removal processed successfully." });
+      .json({ message: "Product removal and update processed successfully." });
   } catch (error) {
     console.error("Error updating product data:", error);
     response.status(500).json({ message: "Failed to update product data" });
